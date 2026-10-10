@@ -1,0 +1,12 @@
+# Actual source mapping
+
+- `1405-06-22.xlsx`: exact requested roster sheets; main 626, secondary 148, shared 89, secondary-only 59, union 685; 19 main units; 62 valid titles. 315 trimmed internal descriptions normalize to 308 with Persian letters/spacing. Only personnel code, unit, job/title/code, shift and departure marker are processed. Historical settlement sheets and personal/contact/identity fields are ignored. Main record wins overlap; preview does not activate employees.
+- Job registry: 21 families and 21 inactive KPI drafts (weights require approval; targets/thresholds/effective periods remain unset); 61/62 standardized titles have exact suggestions. `کارگر صنعتی` remains ambiguous. Suggestions require an explicit approved profile mapping; existing profiles/employee assignments are preserved. Full internal-description mapping remains unfinished.
+- Production + downtime: join unique `سریال ردیابی`; conflicting duplicate personnel-code columns and duplicate tracking identifiers are rejected. Standard cycle unit explicitly selected; output/scrap, earned/operating and stopped/available totals calculate period metrics. Missing inputs prevent calculation. Source completeness and cycle units still need operational approval.
+- `MIS.mordad.xlsx`: request + personnel code + date/start time + activity deduplication; work minutes; standard minutes >0; missing/zero standard time remains null and cannot generate efficiency/zero score.
+- `KARSRA.Mordad.xlsx`: normalized exact code; delay/early departure/deficit/required durations; daily absence numeric. HH:MM can exceed 24 hours. Blank duration is null. Unapproved inference from unrelated leave/overtime fields is forbidden.
+- `عملکرد پرسنل نت.xls`: absent; XML SpreadsheetML support and cross-source maintenance validation remain unfinished.
+- Automatic scoring uses existing source-owned custom fields with configured thresholds only. No production thresholds/targets were invented. Manual, supervisor and unrelated scores are unchanged; finalized records are skipped. Test thresholds and violation policy exist only in isolated private acceptance data and are not packaged.
+- Violation Excel: external ID, exact personnel code, Jalali date, category, severity, evidence, description. Unknown/ambiguous/incomplete rows remain rejected in preview. Commit creates draft only. Attendance-related approval requires independent justification; Kasra data never automatically creates violations.
+
+Real source files and private acceptance/credential/KV files are excluded from the release.
