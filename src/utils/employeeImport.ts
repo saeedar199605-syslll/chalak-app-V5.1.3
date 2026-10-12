@@ -1,3 +1,4 @@
+import { normalizePersonnelCode } from './personnelSearch';
 import type { Employee, JobProfile, UserRole } from '../types';
 import { validateEmployeeInput } from './validation';
 
@@ -100,11 +101,13 @@ export function prepareEmployeeImport(
   const seenCodes = new Set<string>();
   const seenUsernames = new Set<string>();
   const protectedAdmins = employees.filter(employee => employee.role === 'admin' || employee.username === 'admin' || employee.code === 'ADMIN-001');
-  let workingEmployees: Employee[] = mode === 'replace' ? [...protectedAdmins] : [...employees];
+  let workingEmployees: Employee[] = [...employees];
   const counts: EmployeeImportPlan['counts'] = {
     NEW: 0, UPDATE: 0, UNCHANGED: 0, INVALID: 0, DUPLICATE: 0, 'UNKNOWN / UNMAPPED': 0, removed: 0,
   };
-  const defaultProfile = profiles[0];
+  const groups = new Map<string, string[]>();
+  for (const value of importedItems) { const r = value && typeof value === 'object' ? value as Record<string, unknown> : {}; const c = normalizePersonnelCode(readValue(r, ['code','کد پرسنلی'])); groups.set(c,[...(groups.get(c)||[]),JSON.stringify(r)]); }
+  const conflictingCodes = new Set([...groups].filter(([,v]) => new Set(v).size > 1).map(([k]) => k));
 
   importedItems.forEach((rawValue, index) => {
     const rowNumber = index + 1;
@@ -112,7 +115,7 @@ export function prepareEmployeeImport(
       ? rawValue as Record<string, unknown>
       : {};
     const name = readValue(raw, ['name', 'نام و نام خانوادگی']);
-    const code = readValue(raw, ['code', 'کد پرسنلی']).toUpperCase();
+    const code = normalizePersonnelCode(readValue(raw, ['code', 'کد پرسنلی']));
     const issues: string[] = [];
     const unmappedFields = Object.keys(raw).filter(key => !KNOWN_FIELDS.has(key) && String(raw[key] ?? '').trim() !== '');
 
@@ -132,6 +135,7 @@ export function prepareEmployeeImport(
       addRow('INVALID');
       return;
     }
+    if (conflictingCodes.has(code)) { issues.push('کد تکراری با اطلاعات متناقض؛ هیچ نسخه‌ای ثبت نمی‌شود.'); addRow('UNKNOWN / UNMAPPED'); return; }
     if (seenCodes.has(code)) {
       issues.push(`کد پرسنلی ${code} در این فایل چند بار آمده است.`);
       addRow('DUPLICATE');
@@ -145,17 +149,20 @@ export function prepareEmployeeImport(
       return;
     }
 
+    const existingMatches = employees.filter(e => normalizePersonnelCode(e.code) === code);
+    if (existingMatches.length > 1) { issues.push('هویت پرسنلی مبهم است.'); addRow('UNKNOWN / UNMAPPED'); return; }
+    const existing = existingMatches[0];
     const rawProfile = readValue(raw, ['profile', 'profileId', 'عنوان رده شغلی', 'پروفایل شغلی']);
     const matchedProfile = rawProfile
       ? profiles.find(profile => profile.id === rawProfile || profile.code.toLowerCase() === rawProfile.toLowerCase() || profile.title.toLowerCase() === rawProfile.toLowerCase())
-      : defaultProfile;
+      : profiles.find(p => p.id === existing?.profileId);
     if (!matchedProfile) {
       issues.push(rawProfile ? `رده شغلی «${rawProfile}» پیدا نشد.` : 'برای این همکار رده شغلی در دسترس نیست.');
       addRow('UNKNOWN / UNMAPPED');
       return;
     }
 
-    const rawRole = readValue(raw, ['role', 'نقش کاربری', 'نقش'], 'employee');
+    const rawRole = readValue(raw, ['role', 'نقش کاربری', 'نقش'], existing?.role || 'employee');
     const role = roleFromValue(rawRole);
     if (!role) {
       issues.push(`نقش «${rawRole}» با نقش‌های شناخته‌شده مطابقت ندارد.`);
@@ -163,9 +170,7 @@ export function prepareEmployeeImport(
       return;
     }
 
-    const existing = workingEmployees.find(employee => employee.code.toUpperCase() === code ||
-      employee.username.toLowerCase() === readValue(raw, ['username', 'نام کاربری']).toLowerCase());
-    const usernameInput = readValue(raw, ['username', 'نام کاربری']);
+    const usernameInput = readValue(raw, ['username', 'نام کاربری'], existing?.username || '');
     const cleanUsername = usernameInput.toLowerCase().replace(/[^a-z0-9_.-]/g, '') || `user_${code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
     let username = cleanUsername;
     let suffix = 1;
@@ -174,8 +179,8 @@ export function prepareEmployeeImport(
     }
     seenUsernames.add(username);
 
-    const resolvePerson = (value: string) => value ? workingEmployees.find(employee => employee.code.toUpperCase() === value.toUpperCase() || employee.id === value)
-      || employees.find(employee => employee.code.toUpperCase() === value.toUpperCase() || employee.id === value) : undefined;
+    const resolvePerson = (value: string) => value ? workingEmployees.find(employee => normalizePersonnelCode(employee.code) === normalizePersonnelCode(value) || employee.id === value)
+      || employees.find(employee => normalizePersonnelCode(employee.code) === normalizePersonnelCode(value) || employee.id === value) : undefined;
     const relationshipValues = [
       ['supervisorId', readValue(raw, ['supervisor', 'supervisorId', 'کد پرسنلی سرپرست مستقیم'])],
       ['peerReviewerId', readValue(raw, ['peer', 'peerReviewerId', 'کد پرسنلی ارزیاب همتا'])],
@@ -186,7 +191,7 @@ export function prepareEmployeeImport(
     const relationships: Record<string, string | undefined> = {};
     for (const [field, value] of relationshipValues) {
       if (!value) {
-        relationships[field] = undefined;
+        relationships[field] = existing?.[field];
         continue;
       }
       const person = resolvePerson(value);
@@ -208,7 +213,7 @@ export function prepareEmployeeImport(
     }
 
     const candidate = {
-      name, code, unit: readValue(raw, ['unit', 'واحد سازمانی'], 'سالن تولید'),
+      ...existing, name, code, unit: readValue(raw, ['unit', 'واحد سازمانی'], existing?.unit || ''),
       profileId: matchedProfile.id, role, username,
       supervisorId: relationships.supervisorId,
       peerReviewerId: relationships.peerReviewerId,
@@ -224,8 +229,7 @@ export function prepareEmployeeImport(
     }
 
     const validEmployee = validation.data;
-    const matchingIndex = workingEmployees.findIndex(employee => employee.code.toUpperCase() === validEmployee.code.toUpperCase() ||
-      employee.username.toLowerCase() === validEmployee.username.toLowerCase());
+    const matchingIndex = workingEmployees.findIndex(employee => normalizePersonnelCode(employee.code) === normalizePersonnelCode(validEmployee.code));
     const matchingEmployee = matchingIndex >= 0 ? workingEmployees[matchingIndex] : undefined;
     const changes = makeChanges(matchingEmployee, validEmployee, workingEmployees, profiles);
     if (matchingEmployee && sameImportedValues(matchingEmployee, validEmployee)) {
@@ -234,7 +238,7 @@ export function prepareEmployeeImport(
       return;
     }
     if (matchingEmployee) {
-      workingEmployees[matchingIndex] = { ...validEmployee, id: matchingEmployee.id };
+      workingEmployees[matchingIndex] = { ...matchingEmployee, ...validEmployee, id: matchingEmployee.id };
       counts.UPDATE += 1;
       rows.push({ rowNumber, status: 'UPDATE', name, code, changes, issues: [] });
       return;
@@ -244,13 +248,6 @@ export function prepareEmployeeImport(
     counts.NEW += 1;
     rows.push({ rowNumber, status: 'NEW', name, code, changes: makeChanges(undefined, validEmployee, workingEmployees, profiles), issues: [] });
   });
-
-  if (mode === 'replace') {
-    const importedIds = new Set(rows.filter(row => row.status === 'NEW' || row.status === 'UPDATE' || row.status === 'UNCHANGED')
-      .map(row => workingEmployees.find(employee => employee.code.toUpperCase() === row.code.toUpperCase())?.id)
-      .filter((id): id is string => Boolean(id)));
-    counts.removed = employees.filter(employee => !protectedAdmins.some(admin => admin.id === employee.id) && !importedIds.has(employee.id)).length;
-  }
 
   const changedCount = counts.NEW + counts.UPDATE;
   return { employees: workingEmployees, rows, counts, errors, changedCount };

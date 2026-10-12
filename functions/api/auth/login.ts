@@ -10,6 +10,7 @@ import {
 } from '../../../cloudflare/auth';
 
 interface EmployeeRecord {
+  employmentStatus?: 'active' | 'inactive' | 'unknown';
   id: string;
   name: string;
   username: string;
@@ -58,6 +59,7 @@ export async function onRequestPost({ request, env }: Context): Promise<Response
     const employees = Array.isArray(state.pe_employees) ? state.pe_employees as EmployeeRecord[] : [];
     employee = employees.find(item => normalizeUsername(item.username) === username || String(item.code || '').toLowerCase() === username);
     if (employee && employee.role !== 'admin') {
+      if (employee.employmentStatus === 'inactive' || employee.employmentStatus === 'unknown') return jsonResponse({ error: 'وضعیت استخدامی برای ورود فعال نیست؛ تأیید منابع انسانی لازم است.' }, 403);
       const lockedUsers = Array.isArray(state.pe_locked_users) ? state.pe_locked_users.map(String) : [];
       if (lockedUsers.includes(employee.id) || lockedUsers.includes(normalizeUsername(employee.username))) {
         return jsonResponse({ error: 'این حساب توسط مدیریت مسدود شده است.' }, 403);

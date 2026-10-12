@@ -35,6 +35,7 @@ interface StateEnvelope {
   sourceImport?: unknown;
   operationId?: unknown;
   evaluationPatch?: unknown;
+  employeePatch?: unknown;
   evaluationExpected?: unknown;
   evaluationDeleteIds?: unknown;
 }
@@ -601,6 +602,7 @@ function validateMasterDataImport(
   const existingById = new Map(existingEmployees.map(employee => [employee.id, employee]));
   const validProfileIds = new Set(getProfiles(current).map(profile => profile.id));
   const incomingIds = new Set<string>();
+  const allEmployeeIds = new Set([...existingEmployees.map(item => item.id), ...(incoming as Employee[]).map(item => item?.id)]);
   const codeOwners = new Map<string, string>();
   const usernameOwners = new Map<string, string>();
   for (const existing of existingEmployees) {
@@ -610,6 +612,7 @@ function validateMasterDataImport(
     if (username) usernameOwners.set(username, existing.id);
   }
   for (const employee of incoming as Employee[]) {
+    if (employee?.employmentStatus !== undefined && !['active','inactive','unknown'].includes(employee.employmentStatus)) return false;
     if (!employee || typeof employee.id !== 'string' || !employee.id || incomingIds.has(employee.id) ||
         typeof employee.code !== 'string' || !normalizePersonnelCode(employee.code) ||
         typeof employee.username !== 'string' || !employee.username.trim() || typeof employee.name !== 'string' || !employee.name.trim() ||
@@ -629,7 +632,6 @@ function validateMasterDataImport(
     const usernameOwner = usernameOwners.get(username);
     if (usernameOwner && usernameOwner !== employee.id) return false;
     usernameOwners.set(username, employee.id);
-    const allEmployeeIds = new Set([...existingEmployees.map(item => item.id), ...(incoming as Employee[]).map(item => item.id)]);
     for (const relationId of [employee.supervisorId, employee.peerReviewerId, employee.calibrationLeadId, employee.approverId, employee.hrPartnerId, employee.hseReviewerId]) {
       if (relationId && (!allEmployeeIds.has(relationId) || relationId === employee.id)) return false;
     }
@@ -651,7 +653,7 @@ function validateMasterDataImport(
   // Admin imports carry the full list and may use the existing domain-safe replace rules.
   const merged = new Map(existingEmployees.map(employee => [employee.id, employee]));
   (incoming as Employee[]).forEach(employee => merged.set(employee.id, employee));
-  const finalEmployees = actor.role === 'admin' ? incoming as Employee[] : Array.from(merged.values());
+  const finalEmployees = Array.from(merged.values());
   return safeAdminMasterDataChanges(current, { ...changes, pe_employees: finalEmployees });
 }
 
@@ -1192,7 +1194,7 @@ async function writeState({ request, env, data }: Context): Promise<Response> {
   }
 
   const { state: current, meta: currentMeta } = await readState(env, typeof operationId === 'string' ? operationId : undefined);
-  const payloadHash = operationId ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ changes, sourceImport, evaluationPatch: body.evaluationPatch === true, evaluationExpected: body.evaluationExpected, evaluationDeleteIds: body.evaluationDeleteIds }))))).map(byte => byte.toString(16).padStart(2, '0')).join('') : undefined;
+  const payloadHash = operationId ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ changes, sourceImport, evaluationPatch: body.evaluationPatch === true, employeePatch: body.employeePatch === true, evaluationExpected: body.evaluationExpected, evaluationDeleteIds: body.evaluationDeleteIds }))))).map(byte => byte.toString(16).padStart(2, '0')).join('') : undefined;
   const receipts = Array.isArray(current.__operation_receipts) ? current.__operation_receipts as Array<Record<string, unknown>> : [];
   const receipt = operationId && receipts.find(item => item.operationId === operationId);
   if (receipt) {
@@ -1212,6 +1214,19 @@ async function writeState({ request, env, data }: Context): Promise<Response> {
     }, 409);
   }
   data.diagnostics.serverRevision = currentMeta.revision;
+  if (body.employeePatch !== undefined && typeof body.employeePatch !== 'boolean') return jsonResponse({ error: 'Invalid personnel mutation mode.' }, 400);
+  if (body.employeePatch === true) {
+    if (!operationId || !Array.isArray(changes.pe_employees) || changes.pe_employees.length > 1000 || !validateMasterDataImport(current, changes, data.session, { importType: 'EMPLOYEE', operationId: String(operationId) })) return jsonResponse({ error: 'تغییر پرسنلی نامعتبر یا خارج از مجوز است.', code: 'employee_patch_denied', retryable: false }, 403);
+    const byId = new Map(getEmployees(current).map(e => [e.id, e]));
+    const personnelValue = (e: Employee | undefined) => e ? JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => k !== 'personnelRevision' && k !== 'personnelUpdatedAt').sort(([a],[b]) => a.localeCompare(b)))) : undefined;
+    for (const e of changes.pe_employees as Employee[]) {
+      const previous = byId.get(e.id);
+      if (personnelValue(previous) === personnelValue(e)) continue;
+      byId.set(e.id, { ...e, personnelRevision: (previous?.personnelRevision || 0) + 1, personnelUpdatedAt: new Date().toISOString() });
+    }
+    changes.pe_employees = [...byId.values()];
+  }
+
   if ('pe_job_family_assignments' in changes && (data.session.role !== 'admin' || !changes.pe_job_family_assignments || typeof changes.pe_job_family_assignments !== 'object' || Array.isArray(changes.pe_job_family_assignments) || !Object.values(changes.pe_job_family_assignments as Record<string, ApprovedFamilyAssignment>).every(a => a && validateApprovedFamilyAssignment(a, getProfiles(current), (current.pe_criteria || []) as Criterion[])))) return jsonResponse({ error: 'نگاشت خانواده نیازمند پروفایل معتبر با مجموع وزن ۱۰۰ و مرجع تأیید است.', code: 'job_family_assignment_invalid', retryable: false }, 403);
   if (data.session.role === 'admin' && 'pe_employees' in changes && Array.isArray(current.pe_violations) && Array.isArray(changes.pe_employees)) {
     const employeeIds = new Set((changes.pe_employees as Employee[]).map(e => e.id));

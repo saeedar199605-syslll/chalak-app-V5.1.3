@@ -1,3 +1,4 @@
+import { normalizePersonnelCode } from './utils/personnelSearch';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -721,18 +722,18 @@ export default function App() {
     }
   };
 
-  const handleAddEmployee = (emp: Omit<Employee, 'id'>) => {
+  const handleAddEmployee = async (emp: Omit<Employee, 'id'>, operationId?: string) => {
     const valResult = validateEmployeeInput(emp);
     if (!valResult.success) {
       alert(valResult.errors.join('\n'));
       return;
     }
-    const { employee: newEmp, evaluation } = db.addEmployee(valResult.data);
+    const next = { ...valResult.data, id: operationId ? `emp:${operationId}` : crypto.randomUUID() };
+    if (employees.some(e => normalizePersonnelCode(e.code) === normalizePersonnelCode(next.code))) return false;
+    if (!(await db.commitBulkState({ pe_employees: [...employees, next] }, operationId || crypto.randomUUID(), { pe_employees: JSON.stringify(employees) }))) return false;
     setEmployees(db.getEmployees());
-    if (evaluation) {
-      setEvaluations(db.getEvaluations());
-    }
     notifyDataSaved();
+    return true;
   };
 
   const renameCloudCredential = async (oldUsername: string, newUsername: string): Promise<boolean> => {
@@ -755,7 +756,7 @@ export default function App() {
     }
   };
 
-  const handleUpdateEmployee = async (id: string, emp: Omit<Employee, 'id'>) => {
+  const handleUpdateEmployee = async (id: string, emp: Omit<Employee, 'id'>, operationId?: string) => {
     const valResult = validateEmployeeInput(emp);
     if (!valResult.success) {
       alert(valResult.errors.join('\n'));
@@ -763,9 +764,11 @@ export default function App() {
     }
     const existing = employees.find(employee => employee.id === id);
     if (existing && !(await renameCloudCredential(existing.username, valResult.data.username))) return;
-    db.updateEmployee(id, valResult.data);
+    if (!existing) return false;
+    if (!(await db.commitBulkState({ pe_employees: employees.map(e => e.id === id ? { ...existing, ...valResult.data } : e) }, operationId || crypto.randomUUID(), { pe_employees: JSON.stringify(employees) }))) return false;
     setEmployees(db.getEmployees());
     notifyDataSaved();
+    return true;
   };
 
   const removeCloudCredential = async (username: string) => {

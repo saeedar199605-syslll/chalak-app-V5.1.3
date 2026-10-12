@@ -383,16 +383,19 @@ export class AppDatabase {
       this.managedCommitQueueDepth = Math.max(0, this.managedCommitQueueDepth - 1);
       this.activeManagedWrites += 1;
       this.maxConcurrentManagedWrites = Math.max(this.maxConcurrentManagedWrites, this.activeManagedWrites);
-      const operationId = this.pendingBulkOperation?.id || this.pendingStateCommit?.id;
+      const operationId = this.pendingBulkOperation?.id || this.pendingStateCommit?.id || JSON.parse(body).operationId;
+      let receiptReadSucceeded = false;
       const reconcile = async (): Promise<Response | null> => {
         if (!operationId) return null;
         try {
           const response = await fetch(`/api/state?operationId=${encodeURIComponent(operationId)}`, { credentials: 'same-origin', signal: AbortSignal.timeout(15_000) });
+          receiptReadSucceeded = response.ok;
           if (response.ok && (await response.clone().json()).accepted === true) return response;
         } catch { /* An unconfirmed receipt is never success. */ }
         return null;
       };
       try {
+        if (retryCount > 0 && operationId) { const acknowledged = await reconcile(); if (acknowledged) return acknowledged; if (!receiptReadSucceeded) return new Response(JSON.stringify({ error: 'نتیجه عملیات نامعلوم است؛ رسید سرور در دسترس نیست.', retryable: false, code: 'operation_outcome_unknown' }), {status:503, headers:{'Content-Type':'application/json'}}); }
         const response = await fetch('/api/state', {
           method: 'POST',
           credentials: 'same-origin',
@@ -1518,6 +1521,9 @@ export class AppDatabase {
     if (!this.cloudSyncEnabled) return;
     for (const key of CLOUD_SYNC_KEYS) {
       const current = localStorage.getItem(key);
+      // Personnel writes go through setItem/managed commits and already mark dirtiness.
+      // A shared-cache change from another tab is a read invalidation, not a new write.
+      if (key === STORAGE_KEYS.EMPLOYEES && !this.dirtyKeys.has(key)) continue;
       const previous = this.lastSyncedValues.get(key) ?? null;
       if (current !== previous) this.dirtyKeys.add(key);
     }
@@ -1581,7 +1587,7 @@ export class AppDatabase {
           changed = true;
           changedKeys.push(key);
         }
-      } else if (localRaw !== nextRaw) {
+      } else if (localRaw !== nextRaw || this.lastSyncedValues.get(key) !== nextRaw) {
         let before: unknown;
         try { before = localRaw === null ? undefined : JSON.parse(localRaw); } catch { before = localRaw; }
         this.markDomainStateChange(key, before, remoteState[key]);
@@ -1813,6 +1819,24 @@ export class AppDatabase {
           evaluationExpected = undefined;
         }
       }
+      let employeePatch = false;
+      if (Array.isArray(changes.pe_employees)) {
+        const raw = this.lastSyncedValues.get(STORAGE_KEYS.EMPLOYEES);
+        const baseline: Employee[] = raw ? JSON.parse(raw) : [];
+        const old = new Map(baseline.map(e => [e.id, e]));
+        const next = changes.pe_employees as Employee[];
+        const ids = new Set(next.map(e => e.id));
+        // Deletions keep their existing guarded contract; ordinary edits/imports send changed records only.
+        if (baseline.every(e => ids.has(e.id))) {
+          // Server-owned revision stamps are acknowledgements, never user mutations.
+          // A stale tab must not resend an employee just to rewrite those stamps.
+          const personnelValue = (e: Employee | undefined) => e ? JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => k !== 'personnelRevision' && k !== 'personnelUpdatedAt').sort(([a],[b]) => a.localeCompare(b)))) : undefined;
+          const updated = next.filter(e => personnelValue(old.get(e.id)) !== personnelValue(e));
+          changes.pe_employees = updated.map(({personnelRevision, personnelUpdatedAt, ...record}) => record);
+          employeePatch = true;
+          if (!updated.length) { delete changes.pe_employees; sentRaw.delete(STORAGE_KEYS.EMPLOYEES); this.dirtyKeys.delete(STORAGE_KEYS.EMPLOYEES); employeePatch = false; }
+        }
+      }
       keysToSend = Object.keys(changes);
       if (keysToSend.length === 0) {
         this.emitCloudStatus('synced', 'تغییری برای ذخیره وجود ندارد.', { lastSyncedAt: new Date().toISOString() });
@@ -1833,7 +1857,7 @@ export class AppDatabase {
       }
       if (this.terminalRejectedSnapshot && this.terminalRejectedSnapshot.fingerprint !== fingerprint) this.terminalRejectedSnapshot = null;
 
-      const requestFingerprint = await this.recordFingerprint({ changes, sourceImport: sourceImportContext, evaluationPatch, evaluationExpected, evaluationDeleteIds });
+      const requestFingerprint = await this.recordFingerprint({ changes, sourceImport: sourceImportContext, employeePatch, evaluationPatch, evaluationExpected, evaluationDeleteIds });
       const operationId = bulkOperation?.id || await this.getOrCreateSyncOperationId(requestFingerprint);
       this.pendingOperationIds.add(operationId);
       this.emitCloudStatus('syncing', 'در حال ذخیره…', { operationId });
@@ -1845,6 +1869,7 @@ export class AppDatabase {
           baseRevision: this.cloudRevision,
           clientId: this.getClientId(),
           operationId,
+          ...(employeePatch ? { employeePatch: true } : {}),
           ...(evaluationPatch ? { evaluationPatch: true, evaluationExpected, evaluationDeleteIds } : {}),
           ...(sourceImportContext ? { sourceImport: sourceImportContext } : {}),
         }), controller.signal, this.retryAttempt);

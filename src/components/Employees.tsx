@@ -1,3 +1,4 @@
+import PersonnelImport from './PersonnelImport';
 import SearchInput from './ui/SearchInput';
 /**
  * @license
@@ -47,8 +48,8 @@ interface EmployeesProps {
   profiles: JobProfile[];
   currentUser: Employee | null;
   evaluations?: Evaluation[];
-  onAddEmployee: (emp: Omit<Employee, 'id'>) => void;
-  onUpdateEmployee: (id: string, emp: Omit<Employee, 'id'>) => void;
+  onAddEmployee: (emp: Omit<Employee, 'id'>, operationId?: string) => void | boolean | Promise<boolean | void>;
+  onUpdateEmployee: (id: string, emp: Omit<Employee, 'id'>, operationId?: string) => void | boolean | Promise<boolean | void>;
   onBulkUpdateEmployees?: (employees: Employee[], operationId?: string) => boolean | Promise<boolean>;
   onImportEmployees?: (employees: Employee[], sourceImport: MasterDataSourceImportContext) => Promise<boolean>;
   onDeleteEmployee: (id: string) => boolean | Promise<boolean>;
@@ -372,14 +373,9 @@ export default function Employees({
           errors: ['مجوز ورود اطلاعات را بررسی کنید یا ردیف‌های نامعتبر را اصلاح کنید.'],
         };
       } else if (onBulkUpdateEmployees) {
-        onBulkUpdateEmployees(plan.employees);
+        if ((await onBulkUpdateEmployees(plan.employees)) !== true) return { count: 0, message: 'سرور ثبت را تأیید نکرد.', errors: ['پیش‌نمایش را حفظ و وضعیت اتصال را بررسی کنید.'] };
       } else {
-        db.saveEmployees(plan.employees);
-        plan.employees.forEach(emp => {
-          const orig = employees.find(existing => existing.id === emp.id);
-          if (orig) onUpdateEmployee(emp.id, emp);
-          else onAddEmployee(emp);
-        });
+        return { count: 0, message: 'ذخیره سروری در دسترس نیست.', errors: ['هیچ موفقیت محلی به‌جای سرور پذیرفته نمی‌شود.'] };
       }
     }
 
@@ -553,8 +549,12 @@ export default function Employees({
     setIsModalOpen(true);
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const [personnelSaving, setPersonnelSaving] = useState(false);
+  const personnelSubmit = useRef(false);
+  const formOperation = useRef({ fingerprint: '', id: '' });
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (personnelSubmit.current) return;
     setErrorMsg('');
 
     const codeClean = formCode.trim().toUpperCase();
@@ -605,13 +605,14 @@ export default function Employees({
       return;
     }
 
-    if (editingId) {
-      onUpdateEmployee(editingId, payload);
-    } else {
-      onAddEmployee(payload);
-    }
-
-    setIsModalOpen(false);
+    const fingerprint = JSON.stringify({ editingId, payload });
+    if (formOperation.current.fingerprint !== fingerprint) formOperation.current = { fingerprint, id: crypto.randomUUID() };
+    personnelSubmit.current = true; setPersonnelSaving(true);
+    try {
+      const accepted = editingId ? await onUpdateEmployee(editingId, payload, formOperation.current.id) : await onAddEmployee(payload, formOperation.current.id);
+      if (accepted !== true) { setErrorMsg('سرور ذخیره را تأیید نکرد؛ اطلاعات فرم حفظ شد. وضعیت اتصال یا تعارض نسخه را بررسی کنید.'); return; }
+      setIsModalOpen(false);
+    } finally { personnelSubmit.current = false; setPersonnelSaving(false); }
   };
 
   // Bulk Import Handlers
@@ -980,7 +981,7 @@ export default function Employees({
                     )}
                   </div>
                   <div className="min-w-0">
-                    <h4 className="font-bold text-slate-100 truncate"><HighlightText text={emp.name} highlight={searchTerm} /></h4>
+                    <h4 className="font-bold text-slate-100 truncate"><HighlightText text={emp.name} highlight={searchTerm} />{emp.employmentStatus === 'inactive' ? ' — غیرفعال' : emp.employmentStatus === 'unknown' ? ' — وضعیت نیازمند تأیید' : ''}</h4>
                     <span className="text-[10px] text-slate-400 truncate block"><HighlightText text={emp.unit} highlight={searchTerm} /></span>
                   </div>
                 </div>
@@ -1014,6 +1015,7 @@ export default function Employees({
                 <div className="w-48 shrink-0 flex items-center justify-end gap-1.5">
                   <button
                     onClick={() => onStartEvaluation(emp.id)}
+                    disabled={emp.employmentStatus === 'inactive' || emp.employmentStatus === 'unknown'}
                     className="bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 border border-teal-500/30 px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-all"
                     title="شروع ارزیابی عملکرد"
                   >
@@ -1320,7 +1322,7 @@ export default function Employees({
               </button>
             </div>
 
-            <form onSubmit={handleSave} className="p-5 space-y-4">
+            <form aria-busy={personnelSaving} onSubmit={handleSave} className="p-5 space-y-4">
               {errorMsg && (
                 <div className="bg-red-500/10 border border-red-500/20 text-red-300 p-3 rounded-xl text-xs">
                   {errorMsg}
@@ -1484,7 +1486,7 @@ export default function Employees({
                   انصراف
                 </button>
                 <button
-                  type="submit"
+                  type="submit" disabled={personnelSaving}
                   className="px-4 py-2 bg-teal-500 hover:bg-teal-600 text-slate-900 rounded-xl text-xs font-bold cursor-pointer"
                 >
                   ذخیره پرونده
@@ -1497,6 +1499,7 @@ export default function Employees({
       )}
 
       {/* Universal Import / Export Modal */}
+      {currentUser && <PersonnelImport actor={currentUser} profiles={profiles} />}
       <UniversalDataExchange<Employee>
         config={employeesExchangeConfig}
         isOpen={isExchangeModalOpen}

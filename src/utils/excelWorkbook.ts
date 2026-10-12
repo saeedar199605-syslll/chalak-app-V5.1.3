@@ -173,7 +173,11 @@ export async function readWorkbookRowsLocally(file: File): Promise<ParsedWorkboo
     const rows: ExcelCell[][] = [];
     worksheet.eachRow({ includeEmpty: true }, row => {
       const values = row.values as ExcelJS.CellValue[];
-      rows.push(trimTrailingEmptyCells(values.slice(1).map(normalizeCell)));
+      rows.push(trimTrailingEmptyCells(values.slice(1).map((value, index) => {
+        const cell = row.getCell(index + 1);
+        return typeof value === 'number' && Number.isInteger(value) && /^0{2,}$/.test(cell.numFmt || '')
+          ? String(value).padStart(cell.numFmt.length, '0') : normalizeCell(value);
+      })));
     });
     rowsBySheet[worksheet.name] = rows;
   });

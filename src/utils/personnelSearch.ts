@@ -10,10 +10,9 @@ export function normalizeDigits(value: string): string {
 }
 
 export function normalizePersonnelCode(value: string): string {
-  return normalizeDigits(String(value || '').normalize('NFKC'))
+  return normalizeDigits(String(value ?? ''))
     .trim()
-    .toLocaleUpperCase()
-    .replace(/[\s\u200c\u200f\-‐‑‒–—_./\\]+/g, '');
+    .toLocaleUpperCase();
 }
 
 export function matchesPersonnelCode(code: string, query: string): boolean {

@@ -112,6 +112,18 @@ export interface JobProfile {
 export type UserRole = 'admin' | 'supervisor' | 'employee';
 
 export interface Employee {
+  employmentStatus?: 'active' | 'inactive' | 'unknown';
+  employmentStart?: string;
+  employmentEnd?: string;
+  approvedJobTitle?: string;
+  internalJobDescription?: string;
+  jobFamily?: string;
+  shift?: string;
+  personnelRevision?: number;
+  personnelUpdatedAt?: string;
+  personnelSource?: string;
+  personnelEffectiveDate?: string;
+  personnelApprovalReference?: string;
   id: string;
   name: string;
   code: string; // Staff ID, e.g. EMP-1001

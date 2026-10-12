@@ -180,7 +180,7 @@ export default function Evaluations({
   const isAdmin = currentUser?.role === 'admin' || currentUser?.username === 'admin' || currentUser?.code === 'ADMIN-001';
   const canImportPerformance = Boolean(currentUser && (canImport(currentUser, 'mis').allowed || canImport(currentUser, 'kasra').allowed));
   const filteredStartEmployees = useMemo(() => {
-    const filtered = employees.filter(employee => (!startUnit || employee.unit === startUnit) && matchesEmployeeSearch(employee, startSearch));
+    const filtered = employees.filter(employee => employee.employmentStatus !== 'inactive' && employee.employmentStatus !== 'unknown' && (!startUnit || employee.unit === startUnit) && matchesEmployeeSearch(employee, startSearch));
     return startSearch.trim() ? filtered.sort((left, right) => employeeSearchScore(right, startSearch) - employeeSearchScore(left, startSearch)) : filtered;
   }, [employees, startSearch, startUnit]);
 
